@@ -450,11 +450,23 @@ var currentSession = 'S1';
 var APPRENANTS = SESSIONS[currentSession].apprenants;
 var currentApp = null;
 
-function loginFormateur(){
+// Mémorisation : si déjà connecté sur cet appareil, aller direct au cockpit
+window.addEventListener('load', function(){
+  try {
+    var savedRole = localStorage.getItem('cpfia_formateur_role');
+    if(savedRole){
+      document.getElementById('sel-role').value = savedRole;
+      loginFormateur(true);
+    }
+  } catch(e){}
+});
+
+function loginFormateur(auto){
   var role = document.getElementById('sel-role').value;
   if(!role){ showToast('Sélectionne ton rôle'); return; }
   document.getElementById('screen-login').style.display='none';
   document.getElementById('screen-app').style.display='block';
+  try { localStorage.setItem('cpfia_formateur_role', role); } catch(e){}
   var names={laurence:'Laurence',yann:'Yann'};
   var roles={laurence:'Formatrice',yann:'Responsable Qualiopi'};
   document.getElementById('sb-av').textContent=names[role][0];
