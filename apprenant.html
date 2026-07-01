@@ -69,6 +69,9 @@ nav{flex:1;padding:12px;overflow-y:auto}
 .nav-item.active{background:var(--vlight);color:var(--violet)}
 .nav-item svg{width:17px;height:17px;flex-shrink:0}
 .nav-badge{margin-left:auto;background:var(--orange);color:white;font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;min-width:20px;text-align:center}
+.notif-pastille{position:absolute;top:6px;right:8px;width:9px;height:9px;background:var(--orange);border-radius:50%;box-shadow:0 0 0 2px white;animation:pulse 1.6s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 2px white,0 0 0 0 rgba(245,130,10,.5)}70%{box-shadow:0 0 0 2px white,0 0 0 8px rgba(245,130,10,0)}100%{box-shadow:0 0 0 2px white,0 0 0 0 rgba(245,130,10,0)}}
+.nav-item{position:relative}
 .sb-footer{padding:14px 16px;border-top:1px solid var(--border)}
 .prog-label{display:flex;justify-content:space-between;font-size:12px;font-weight:600;color:var(--text2);margin-bottom:7px}
 .prog-label span:last-child{color:var(--violet);font-weight:800}
@@ -839,6 +842,10 @@ function login(){
   updateProgress();
   renderQuickList();
   renderQuiz(1);
+  askNotifPermission();
+  checkNouveautes();
+  // Re-vérifier toutes les 60 secondes
+  setInterval(checkNouveautes, 60000);
 }
 
 // ── NAV ──
@@ -850,7 +857,8 @@ function showPage(id,el){
   const titles={dashboard:'Tableau de bord',modules:'Mes modules',projet:'Mon projet certifiant',quiz:'Préparer ma visio',agenda:'Mon agenda',ressources:'Ressources'};
   document.getElementById('topbar-title').textContent=titles[id]||id;
   if(id==='modules') renderModules();
-  if(id==='projet') loadProjetEtape();
+  if(id==='projet'){ loadProjetEtape(); clearPastille('projet'); }
+  if(id==='dashboard'){ clearPastille('dashboard'); }
   closeSidebar();
 }
 function openSidebar(){ document.getElementById('sidebar').classList.add('open'); document.getElementById('overlay').classList.add('open'); }
@@ -1120,6 +1128,64 @@ async function postToBackend(action, data){
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({action,user,...data})
   }).then(r=>r.json());
+}
+
+// ── SYSTÈME DE PASTILLES / NOTIFICATIONS ──
+async function checkNouveautes(){
+  if(!user) return;
+  try {
+    const r = await fetch(APPS_SCRIPT_URL + '?action=get_apprenant&user=' + encodeURIComponent(user));
+    const d = await r.json();
+    if(d && !d.error){
+      // Étape projet débloquée ?
+      const lastEtape = parseInt(getLS('last_etape')||'0');
+      const currentEtape = parseInt(d.etape_projet||'0');
+      if(currentEtape > lastEtape){
+        showPastille('projet');
+        showToast('Nouveau : Laurence a débloqué une étape de ton projet !');
+        setLS('last_etape', currentEtape);
+        setLS('projet_etape', currentEtape);
+        // Notification navigateur si autorisée
+        if('Notification' in window && Notification.permission === 'granted'){
+          new Notification('CPF IA', { body:'Laurence a débloqué une nouvelle étape de ton projet certifiant', icon:'./icon-192.png' });
+        }
+      }
+      // Message non lu ?
+      if(d.message_nouveau){
+        showPastille('dashboard');
+      }
+    }
+  } catch(e){ console.log('check nouveautés:', e); }
+}
+
+function showPastille(page){
+  var navItems = document.querySelectorAll('.nav-item');
+  navItems.forEach(function(item){
+    if(item.getAttribute('onclick') && item.getAttribute('onclick').includes(page)){
+      if(!item.querySelector('.notif-pastille')){
+        var p = document.createElement('span');
+        p.className = 'notif-pastille';
+        item.appendChild(p);
+      }
+    }
+  });
+}
+
+function clearPastille(page){
+  var navItems = document.querySelectorAll('.nav-item');
+  navItems.forEach(function(item){
+    if(item.getAttribute('onclick') && item.getAttribute('onclick').includes(page)){
+      var p = item.querySelector('.notif-pastille');
+      if(p) p.remove();
+    }
+  });
+}
+
+// Demander l'autorisation de notification au premier login
+function askNotifPermission(){
+  if('Notification' in window && Notification.permission === 'default'){
+    Notification.requestPermission();
+  }
 }
 
 // ── APPLIQUER LA CONFIG (dates, horaires, liens depuis CONFIG/Sheet) ──
