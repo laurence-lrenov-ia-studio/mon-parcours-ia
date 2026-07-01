@@ -444,9 +444,9 @@ const SESSIONS = {
   S1: {
     id:'S1', label:'1 juil → 30 sept', dates:'1 juillet → 30 septembre 2025', jour:'Jeudi matin',
     apprenants:[
-      {name:'Barbara',initial:'B',meet:'https://meet.google.com/pxr-zvxe-nbg',visio1:'16 juil 9h',prog:20},
-      {name:'Adouayi',initial:'A',meet:'https://meet.google.com/wnn-vafr-vus',visio1:'16 juil 10h15',prog:15},
-      {name:'Cyril',initial:'C',meet:'https://meet.google.com/iik-dcpk-uco',visio1:'16 juil 11h30',prog:8},
+      {name:'Barbara',initial:'B',meet:'https://meet.google.com/pxr-zvxe-nbg',visio1:'16 juil 9h',prog:0},
+      {name:'Adouayi',initial:'A',meet:'https://meet.google.com/wnn-vafr-vus',visio1:'16 juil 10h15',prog:0},
+      {name:'Cyril',initial:'C',meet:'https://meet.google.com/iik-dcpk-uco',visio1:'16 juil 11h30',prog:0},
       {name:'Maël',initial:'M',meet:'',visio1:'À confirmer',prog:0}
     ],
     agenda:[
@@ -548,7 +548,7 @@ function hydrateBackendData(data){
       visios:Array.isArray(remote.visios) ? remote.visios : [],
       visio1:visioText(remote.visios && remote.visios[0]),
       etape_projet:parseInt(remote.etape_projet || 0,10),
-      prog:old.prog || 0
+      prog:typeof remote.progression_pct === 'number' ? remote.progression_pct : (old.prog || 0)
     });
   });
   Object.keys(SESSIONS).forEach(function(id){ rebuildLiveAgenda(SESSIONS[id], sessionsById[id]); });

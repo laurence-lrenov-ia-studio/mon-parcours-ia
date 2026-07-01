@@ -181,6 +181,7 @@ function getApprenantData(user) {
   if (!found) return { error: 'Apprenant non trouvé' };
   const result = apprenantFromRow(found.row, found.map);
   result.progression = getProgressionUser(result.prenom);
+  result.progression_pct = getProgressionPourcentage(result.prenom);
   result.notes = getNotesUser(result.prenom);
   result.session_data = getSessionData(result.session);
   return result;
@@ -191,6 +192,7 @@ function getApprenantByEmail(email) {
   if (!found) return { found: false };
   const result = apprenantFromRow(found.row, found.map);
   result.found = true;
+  result.progression_pct = getProgressionPourcentage(result.prenom);
   result.session_data = getSessionData(result.session);
   return result;
 }
@@ -200,6 +202,25 @@ function getProgressionUser(user) {
   if (!sheet) return [];
   const data = sheet.getDataRange().getValues();
   return data.slice(1).filter(r => r[0] === user).map(r => ({ module: r[1], tache: r[2], cochee: r[3] }));
+}
+
+// Nombre total de tâches attendues sur tout le parcours (6 modules × 5 étapes)
+// Ajuste ce chiffre si le nombre réel d'étapes par module change.
+const TOTAL_TACHES_PARCOURS = 30;
+
+function isCochee(value) {
+  return value === true || value === 'TRUE' || value === 'VRAI' || value === 1;
+}
+
+// Calcule le vrai % de progression d'un apprenant à partir de ses coches réelles.
+// progressionCache (optionnel) évite de relire tout l'onglet à chaque apprenant.
+function getProgressionPourcentage(user, progressionCache) {
+  const rows = progressionCache || SpreadsheetApp.getActiveSpreadsheet()
+    .getSheetByName('Progression').getDataRange().getValues().slice(1);
+  const cochees = rows.filter(r => r[0] === user && isCochee(r[3])).length;
+  return TOTAL_TACHES_PARCOURS > 0
+    ? Math.min(100, Math.round((cochees / TOTAL_TACHES_PARCOURS) * 100))
+    : 0;
 }
 
 function getNotesUser(user) {
@@ -272,9 +293,15 @@ function getAllData() {
   const appSheet = ss.getSheetByName('Apprenants');
   const data = appSheet.getDataRange().getDisplayValues();
   const map = headerMap(data[0] || []);
+  const progSheet = ss.getSheetByName('Progression');
+  const progressionCache = progSheet ? progSheet.getDataRange().getValues().slice(1) : [];
   const apprenants = data.slice(1)
     .filter(function(row) { return cell(row, map, 'Prénom'); })
-    .map(function(row) { return apprenantFromRow(row, map); });
+    .map(function(row) {
+      const apprenant = apprenantFromRow(row, map);
+      apprenant.progression_pct = getProgressionPourcentage(apprenant.prenom, progressionCache);
+      return apprenant;
+    });
   const sessionIds = {};
   apprenants.forEach(function(apprenant) { sessionIds[apprenant.session] = true; });
   const sessions = Object.keys(sessionIds).map(getSessionData).filter(function(session) { return session; });
