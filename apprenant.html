@@ -869,6 +869,8 @@ const QUIZ_VISIO = {
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyhWFofhMtu2hZJL-GFK6vVmozpfqEs5yef_-vy9ZIJ-ABDfgpfq7CSJuyccCPRMmYS/exec';
 let user = null;
 let currentVisio = 1;
+let syncTimer = null;
+let lastScheduleSignature = null;
 
 function getLS(key){ try{ return JSON.parse(localStorage.getItem('cpfia_'+user+'_'+key)||'null'); } catch(e){ return null; } }
 function setLS(key,val){ try{ localStorage.setItem('cpfia_'+user+'_'+key, JSON.stringify(val)); } catch(e){} }
@@ -918,6 +920,7 @@ function loginEmail(){
           session: d.session, email: email, meet: d.meet || '',
           visios: d.visios || [], etape_projet: d.etape_projet || 0
         };
+        if(d.session_data) CONFIG.sessions[d.session] = d.session_data;
         err.textContent='';
         user = d.prenom;
         proceedLogin();
@@ -957,9 +960,15 @@ function proceedLogin(){
   renderQuiz(1);
   askNotifPermission();
   checkNouveautes();
-  // Re-vérifier toutes les 60 secondes
-  setInterval(checkNouveautes, 60000);
+  // Re-vérifier régulièrement les dates, horaires, liens et déblocages.
+  if(syncTimer) clearInterval(syncTimer);
+  syncTimer = setInterval(checkNouveautes, 15000);
 }
+
+document.addEventListener('visibilitychange', function(){
+  if(!document.hidden && user) checkNouveautes();
+});
+window.addEventListener('focus', function(){ if(user) checkNouveautes(); });
 
 // ── NAV ──
 function showPage(id,el){
@@ -1239,7 +1248,7 @@ async function postToBackend(action, data){
   if(APPS_SCRIPT_URL==='REMPLACER_PAR_URL_APPS_SCRIPT') return Promise.resolve();
   return fetch(APPS_SCRIPT_URL,{
     method:'POST',
-    headers:{'Content-Type':'application/json'},
+    headers:{'Content-Type':'text/plain;charset=utf-8'},
     body:JSON.stringify({action,user,...data})
   }).then(r=>r.json());
 }
@@ -1251,6 +1260,25 @@ async function checkNouveautes(){
     const r = await fetch(APPS_SCRIPT_URL + '?action=get_apprenant&user=' + encodeURIComponent(user));
     const d = await r.json();
     if(d && !d.error){
+      // Ignorer une ancienne version du backend dont les colonnes sont encore décalées.
+      if(String(d.session || '').includes('@') || String(d.visios && d.visios[0] && d.visios[0].date || '').startsWith('http')) return;
+      // Le Sheet est la source de vérité pour les visios et la session.
+      const cfg = CONFIG.apprenants[user] || {email:'', meet:'', visios:[], session:'S1'};
+      cfg.session = d.session || cfg.session;
+      cfg.meet = d.meet !== undefined ? d.meet : cfg.meet;
+      cfg.visios = Array.isArray(d.visios) ? d.visios : cfg.visios;
+      cfg.etape_projet = d.etape_projet || 0;
+      CONFIG.apprenants[user] = cfg;
+      if(d.session_data) CONFIG.sessions[cfg.session] = d.session_data;
+      const sess = CONFIG.sessions[cfg.session] || {label:'', ateliers:[]};
+      const scheduleSignature = JSON.stringify({session:cfg.session, meet:cfg.meet, visios:cfg.visios, ateliers:sess.ateliers});
+      const scheduleChanged = lastScheduleSignature !== null && lastScheduleSignature !== scheduleSignature;
+      lastScheduleSignature = scheduleSignature;
+      applyConfig(cfg, sess);
+      if(scheduleChanged){
+        showPastille('agenda');
+        showToast('Tes dates ou horaires de visio ont été mis à jour.');
+      }
       // Étape projet débloquée ?
       const lastEtape = parseInt(getLS('last_etape')||'0');
       const currentEtape = parseInt(d.etape_projet||'0');
@@ -1304,6 +1332,11 @@ function askNotifPermission(){
 
 // ── APPLIQUER LA CONFIG (dates, horaires, liens depuis CONFIG/Sheet) ──
 function applyConfig(cfg, sess){
+  const meetLink = cfg.meet || '#';
+  ['dash-meet-link','meet-v1','res-v1'].forEach(function(id){
+    const link = document.getElementById(id);
+    if(link) link.href = meetLink;
+  });
   // Bandeau session sur le dashboard
   const heroTags = document.querySelector('.hero-tags');
   // Visio 1 sur le dashboard (prochain événement)
@@ -1333,6 +1366,10 @@ function applyConfig(cfg, sess){
         if(dateEl) dateEl.textContent = v.date + ' · ' + v.heure;
       }
     });
+    const resourceVisio = document.querySelector('#res-v1 p');
+    if(resourceVisio && cfg.visios[0]){
+      resourceVisio.textContent = cfg.visios[0].date + ' · ' + cfg.visios[0].heure;
+    }
   }
   // Mettre à jour les ateliers
   if(sess.ateliers){

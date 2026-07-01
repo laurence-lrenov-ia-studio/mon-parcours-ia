@@ -151,6 +151,17 @@ nav{flex:1;padding:8px;overflow-y:auto}
 .msg-area:focus{outline:none;border-color:var(--violet)}
 .msg-sel{width:100%;padding:10px 13px;border:2px solid var(--border);border-radius:var(--rsm);font-family:'Plus Jakarta Sans',sans-serif;font-size:13px;background:var(--bg);color:var(--text);margin-bottom:12px}
 
+.visio-editor{background:white;border-radius:var(--r);padding:16px;box-shadow:var(--sh);margin-bottom:14px;border:1px solid var(--border)}
+.visio-editor-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
+.visio-editor-title{font-size:13px;font-weight:800}
+.sync-status{font-size:10px;font-weight:700;color:var(--green)}
+.visio-edit-row{display:grid;grid-template-columns:65px 1fr 1fr auto;gap:8px;align-items:end;margin-bottom:9px}
+.visio-edit-row label,.meet-edit label{display:block;font-size:10px;font-weight:700;color:var(--text2);margin-bottom:4px}
+.visio-input{width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);font:12px 'Plus Jakarta Sans',sans-serif;color:var(--text)}
+.visio-input:focus{outline:none;border-color:var(--violet);background:white}
+.visio-number{font-size:12px;font-weight:800;color:var(--violet);padding-bottom:9px}
+.meet-edit{margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
+
 .card{background:white;border-radius:var(--r);padding:16px;box-shadow:var(--sh);margin-bottom:12px}
 
 .sess-list{display:flex;flex-direction:column;gap:8px;margin-bottom:18px}
@@ -179,6 +190,8 @@ nav{flex:1;padding:8px;overflow-y:auto}
   .overlay.open{display:block}
   .main{margin-left:0}
   .topbar{display:none}
+  .visio-edit-row{grid-template-columns:52px 1fr;align-items:end}
+  .visio-edit-row .btn{grid-column:2}
   .mob-topbar{display:flex}
   .content{padding:14px 16px}
   .kpi-row{grid-template-columns:repeat(2,1fr);gap:8px}
@@ -309,6 +322,17 @@ nav{flex:1;padding:8px;overflow-y:auto}
               <a class="btn btn-dark" id="det-meet" href="#" target="_blank">Rejoindre Meet</a>
             </div>
           </div>
+          <div class="visio-editor" id="visio-editor">
+            <div class="visio-editor-head">
+              <div class="visio-editor-title">Dates et horaires des visios</div>
+              <div class="sync-status" id="visio-sync-status">Synchronisé avec le Sheet</div>
+            </div>
+            <div id="visio-edit-rows"></div>
+            <div class="meet-edit">
+              <label for="visio-meet">Lien Google Meet partagé</label>
+              <input class="visio-input" id="visio-meet" type="url" placeholder="https://meet.google.com/..." oninput="editorDirty=true">
+            </div>
+          </div>
           <div class="dtabs">
             <div class="dtab active" onclick="switchDTab('prog',this)">Progression</div>
             <div class="dtab" onclick="switchDTab('notes',this)">Notes & évals</div>
@@ -409,7 +433,7 @@ async function postBackend(action, data){
 
 async function loadFromBackend(){
   try {
-    const r = await fetch(APPS_SCRIPT_URL + '?action=get_all');
+    const r = await fetch(APPS_SCRIPT_URL + '?action=get_all&t=' + Date.now());
     const d = await r.json();
     if(d.apprenants) console.log('Données chargées:', d.apprenants.length, 'apprenants');
     return d;
@@ -451,6 +475,109 @@ const SESSIONS = {
 var currentSession = 'S1';
 var APPRENANTS = SESSIONS[currentSession].apprenants;
 var currentApp = null;
+var formateurSyncTimer = null;
+var syncInFlight = false;
+var editorDirty = false;
+
+function visioText(visio){
+  if(!visio) return 'À confirmer';
+  return [visio.date, visio.heure].filter(Boolean).join(' · ') || 'À confirmer';
+}
+
+function dateParts(label){
+  var parts = String(label || '').trim().split(/\s+/);
+  if(parts.length >= 3) return {day:parts[1], month:parts[2].slice(0,4)};
+  return {day:'?', month:(parts[0] || 'À caler').slice(0,6)};
+}
+
+function rebuildLiveAgenda(session, sessionData){
+  var agenda = [];
+  [1,2,3].forEach(function(number){
+    var groups = {};
+    session.apprenants.forEach(function(apprenant){
+      var visio = apprenant.visios && apprenant.visios[number-1];
+      if(!visio) return;
+      var date = visio.date || 'À caler';
+      if(!groups[date]) groups[date] = [];
+      groups[date].push(apprenant.name + ' · ' + (visio.heure || 'à confirmer'));
+    });
+    Object.keys(groups).forEach(function(date){
+      var dp = dateParts(date);
+      agenda.push({day:dp.day,month:dp.month,title:'Visio '+number,desc:groups[date].join(' · '),statut:'Planifié',type:'v'});
+    });
+  });
+  if(sessionData && sessionData.ateliers){
+    sessionData.ateliers.forEach(function(atelier,index){
+      var dp = dateParts(atelier.date);
+      agenda.push({day:dp.day,month:dp.month,title:'Atelier groupe '+(index+1),desc:(atelier.heure || 'à caler'),statut:'Planifié',type:'grey'});
+    });
+  }
+  session.agenda = agenda;
+}
+
+function hydrateBackendData(data){
+  if(!data || !Array.isArray(data.apprenants)) return false;
+  var malformed = data.apprenants.some(function(apprenant){
+    return String(apprenant.session || '').indexOf('@') !== -1
+      || String(apprenant.visios && apprenant.visios[0] && apprenant.visios[0].date || '').indexOf('http') === 0;
+  });
+  if(malformed) return false;
+  var sessionsById = {};
+  (data.sessions || []).forEach(function(session){ sessionsById[session.id] = session; });
+  var previous = {};
+  Object.keys(SESSIONS).forEach(function(id){
+    SESSIONS[id].apprenants.forEach(function(app){ previous[app.name] = app; });
+  });
+  Object.keys(sessionsById).forEach(function(id){
+    var remote = sessionsById[id];
+    if(!SESSIONS[id]) SESSIONS[id] = {id:id,label:remote.label || id,dates:remote.label || id,jour:'',apprenants:[],agenda:[]};
+    SESSIONS[id].label = remote.label || SESSIONS[id].label;
+    SESSIONS[id].dates = remote.label || SESSIONS[id].dates;
+    SESSIONS[id].ateliers = remote.ateliers || [];
+  });
+  Object.keys(SESSIONS).forEach(function(id){ SESSIONS[id].apprenants = []; });
+  data.apprenants.forEach(function(remote){
+    var id = remote.session || 'S1';
+    if(!SESSIONS[id]) SESSIONS[id] = {id:id,label:id,dates:id,jour:'',apprenants:[],agenda:[]};
+    var old = previous[remote.prenom] || {};
+    SESSIONS[id].apprenants.push({
+      name:remote.prenom,
+      initial:(remote.prenom || '?').charAt(0).toUpperCase(),
+      email:remote.email || '',
+      meet:remote.meet || '',
+      visios:Array.isArray(remote.visios) ? remote.visios : [],
+      visio1:visioText(remote.visios && remote.visios[0]),
+      etape_projet:parseInt(remote.etape_projet || 0,10),
+      prog:old.prog || 0
+    });
+  });
+  Object.keys(SESSIONS).forEach(function(id){ rebuildLiveAgenda(SESSIONS[id], sessionsById[id]); });
+  APPRENANTS = SESSIONS[currentSession] ? SESSIONS[currentSession].apprenants : [];
+  return true;
+}
+
+async function refreshFromBackend(){
+  if(syncInFlight) return;
+  syncInFlight = true;
+  try {
+    var data = await loadFromBackend();
+    if(!hydrateBackendData(data)) return;
+    renderCards('dash-cards');
+    renderCards('full-cards');
+    renderAgenda();
+    updateKPIs();
+    if(currentApp){
+      currentApp = APPRENANTS.find(function(app){ return app.name === currentApp.name; }) || null;
+      if(currentApp){
+        document.getElementById('det-sub').textContent='Session '+currentSession+' · Visio 1 : '+currentApp.visio1;
+        document.getElementById('det-meet').href=currentApp.meet||'#';
+        if(!editorDirty) renderVisioEditor();
+      }
+    }
+  } finally {
+    syncInFlight = false;
+  }
+}
 
 // Mémorisation : si déjà connecté sur cet appareil, aller direct au cockpit
 window.addEventListener('load', function(){
@@ -479,7 +606,17 @@ function loginFormateur(auto){
   renderCards('full-cards');
   renderAgenda();
   updateKPIs();
+  refreshFromBackend();
+  if(formateurSyncTimer) clearInterval(formateurSyncTimer);
+  formateurSyncTimer = setInterval(refreshFromBackend, 15000);
 }
+
+document.addEventListener('visibilitychange', function(){
+  if(!document.hidden && document.getElementById('screen-app').style.display !== 'none') refreshFromBackend();
+});
+window.addEventListener('focus', function(){
+  if(document.getElementById('screen-app').style.display !== 'none') refreshFromBackend();
+});
 
 function switchSession(sid){
   currentSession = sid;
@@ -501,6 +638,11 @@ function updateKPIs(){
   var kv = document.querySelectorAll('.kpi-val');
   if(kv[0]) kv[0].textContent = apps.length;
   if(kv[1]) kv[1].textContent = avg + '%';
+  var firstVisio = apps.length && apps[0].visios ? apps[0].visios[0] : null;
+  if(kv[2] && firstVisio && firstVisio.date){
+    var dp = dateParts(firstVisio.date);
+    kv[2].textContent = dp.day + ' ' + dp.month;
+  }
 }
 
 function renderAgenda(){
@@ -547,8 +689,67 @@ function showAppDetail(name){
   document.getElementById('app-det-view').style.display='block';
   document.getElementById('det-av').textContent=currentApp.initial;
   document.getElementById('det-name').textContent=currentApp.name;
-  document.getElementById('det-sub').textContent='Session 1 · Visio 1 : '+currentApp.visio1;
+  document.getElementById('det-sub').textContent='Session '+currentSession+' · Visio 1 : '+currentApp.visio1;
   document.getElementById('det-meet').href=currentApp.meet||'#';
+  editorDirty = false;
+  renderVisioEditor();
+}
+
+function escapeHtml(value){
+  return String(value == null ? '' : value).replace(/[&<>'"]/g,function(char){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char];
+  });
+}
+
+function renderVisioEditor(){
+  if(!currentApp) return;
+  var rows = document.getElementById('visio-edit-rows');
+  rows.innerHTML = [1,2,3].map(function(number){
+    var visio = (currentApp.visios && currentApp.visios[number-1]) || {date:'',heure:''};
+    return '<div class="visio-edit-row">'
+      +'<div class="visio-number">Visio '+number+'</div>'
+      +'<div><label for="visio-date-'+number+'">Date</label><input class="visio-input" id="visio-date-'+number+'" value="'+escapeHtml(visio.date)+'" oninput="editorDirty=true"></div>'
+      +'<div><label for="visio-time-'+number+'">Horaire</label><input class="visio-input" id="visio-time-'+number+'" value="'+escapeHtml(visio.heure)+'" oninput="editorDirty=true"></div>'
+      +'<button class="btn btn-v" onclick="saveVisio('+number+',this)">Enregistrer</button>'
+      +'</div>';
+  }).join('');
+  document.getElementById('visio-meet').value = currentApp.meet || '';
+  document.getElementById('visio-sync-status').textContent = 'Synchronisé avec le Sheet';
+}
+
+async function saveVisio(number, button){
+  if(!currentApp) return;
+  var date = document.getElementById('visio-date-'+number).value.trim();
+  var heure = document.getElementById('visio-time-'+number).value.trim();
+  var meet = document.getElementById('visio-meet').value.trim();
+  if(!date || !heure){ showToast('Renseigne la date et l’horaire'); return; }
+  var previousText = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Enregistrement…';
+  document.getElementById('visio-sync-status').textContent = 'Envoi au Sheet…';
+  try {
+    var result = await postBackend('set_visio',{apprenant:currentApp.name,visio:number,date:date,heure:heure,meet:meet});
+    if(!result || !result.success || !result.apprenant) throw new Error('Backend non redéployé');
+    currentApp.meet = result.apprenant.meet || '';
+    currentApp.visios = result.apprenant.visios || currentApp.visios;
+    currentApp.visio1 = visioText(currentApp.visios[0]);
+    editorDirty = false;
+    rebuildLiveAgenda(SESSIONS[currentSession], {ateliers:SESSIONS[currentSession].ateliers || []});
+    renderCards('dash-cards');
+    renderCards('full-cards');
+    renderAgenda();
+    updateKPIs();
+    renderVisioEditor();
+    document.getElementById('det-sub').textContent='Session '+currentSession+' · Visio 1 : '+currentApp.visio1;
+    document.getElementById('det-meet').href=currentApp.meet||'#';
+    showToast('Visio '+number+' enregistrée dans le Sheet');
+  } catch(error){
+    document.getElementById('visio-sync-status').textContent = 'Échec de synchronisation';
+    showToast('Impossible d’enregistrer — redéploie le backend Apps Script');
+  } finally {
+    button.disabled = false;
+    button.textContent = previousText;
+  }
 }
 
 function showAppList(){

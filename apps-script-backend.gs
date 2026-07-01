@@ -20,9 +20,9 @@
  * STRUCTURE DU GOOGLE SHEET (onglets à créer avec ces noms exacts) :
  *
  * Onglet "Apprenants" :
- *   A: Prénom | B: Session | C: Lien Meet | D: Visio1_date | E: Visio1_heure
- *   F: Visio2_date | G: Visio2_heure | H: Visio3_date | I: Visio3_heure
- *   J: Etape_projet (0,1,2,3)
+ *   A: Prénom | B: Email | C: Session | D: Lien Meet | E: Visio1_date
+ *   F: Visio1_heure | G: Visio2_date | H: Visio2_heure
+ *   I: Visio3_date | J: Visio3_heure | K: Etape_projet (0,1,2,3)
  *
  * Onglet "Sessions" :
  *   A: ID (S1,S2) | B: Label | C: Atelier1_date | D: Atelier1_heure | E: Atelier1_meet
@@ -59,6 +59,8 @@ function doGet(e) {
   try {
     if (action === 'get_apprenant') {
       result = getApprenantData(user);
+    } else if (action === 'login_email') {
+      result = getApprenantByEmail(e.parameter.email);
     } else if (action === 'get_all') {
       result = getAllData();
     } else {
@@ -92,6 +94,8 @@ function doPost(e) {
       appendRow('Projet', [data.user, action, data.texte, new Date()]);
     } else if (action === 'set_etape_projet') {
       setEtapeProjet(data.apprenant, data.etape);
+    } else if (action === 'set_visio') {
+      result = setVisio(data.apprenant, data.visio, data.date, data.heure, data.meet);
     } else if (action === 'send_message') {
       appendRow('Messages', [data.dest, data.content, false, new Date()]);
     }
@@ -105,7 +109,7 @@ function doPost(e) {
       MailApp.sendEmail(EMAIL_LAURENCE, 'CPF IA — ' + data.user + ' a répondu à une évaluation',
         data.user + ' a répondu au questionnaire du module ' + (parseInt(data.module)+1) + '.');
     }
-    result = { success: true };
+    if (!result || Object.keys(result).length === 0) result = { success: true };
   } catch (err) {
     result = { error: err.toString() };
   }
@@ -121,28 +125,74 @@ function appendRow(sheetName, row) {
   if (sheet) sheet.appendRow(row);
 }
 
-function getApprenantData(user) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const appSheet = ss.getSheetByName('Apprenants');
-  const data = appSheet.getDataRange().getValues();
-  const headers = data[0];
+function normalizeHeader(value) {
+  return String(value || '').trim().toLowerCase();
+}
 
+function headerMap(headers) {
+  const map = {};
+  headers.forEach(function(header, index) {
+    map[normalizeHeader(header)] = index;
+  });
+  return map;
+}
+
+function cell(row, map, header) {
+  const index = map[normalizeHeader(header)];
+  return index === undefined ? '' : row[index];
+}
+
+function findApprenantRow(value, header) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Apprenants');
+  if (!sheet) return null;
+  const data = sheet.getDataRange().getDisplayValues();
+  if (!data.length) return null;
+  const map = headerMap(data[0]);
+  const column = map[normalizeHeader(header)];
+  if (column === undefined) return null;
+  const needle = String(value || '').trim().toLowerCase();
   for (let i = 1; i < data.length; i++) {
-    if (data[i][0] === user) {
-      return {
-        prenom: data[i][0], session: data[i][1], meet: data[i][2],
-        visios: [
-          { date: data[i][3], heure: data[i][4] },
-          { date: data[i][5], heure: data[i][6] },
-          { date: data[i][7], heure: data[i][8] }
-        ],
-        etape_projet: data[i][9] || 0,
-        progression: getProgressionUser(user),
-        notes: getNotesUser(user)
-      };
+    if (String(data[i][column] || '').trim().toLowerCase() === needle) {
+      return { sheet: sheet, row: data[i], rowNumber: i + 1, map: map };
     }
   }
-  return { error: 'Apprenant non trouvé' };
+  return null;
+}
+
+function apprenantFromRow(row, map) {
+  const sessionId = cell(row, map, 'Session');
+  return {
+    prenom: cell(row, map, 'Prénom'),
+    email: cell(row, map, 'Email'),
+    session: sessionId,
+    meet: cell(row, map, 'Lien Meet'),
+    visios: [1, 2, 3].map(function(n) {
+      return {
+        date: cell(row, map, 'Visio' + n + '_date'),
+        heure: cell(row, map, 'Visio' + n + '_heure')
+      };
+    }),
+    etape_projet: parseInt(cell(row, map, 'Etape_projet'), 10) || 0
+  };
+}
+
+function getApprenantData(user) {
+  const found = findApprenantRow(user, 'Prénom');
+  if (!found) return { error: 'Apprenant non trouvé' };
+  const result = apprenantFromRow(found.row, found.map);
+  result.progression = getProgressionUser(result.prenom);
+  result.notes = getNotesUser(result.prenom);
+  result.session_data = getSessionData(result.session);
+  return result;
+}
+
+function getApprenantByEmail(email) {
+  const found = findApprenantRow(email, 'Email');
+  if (!found) return { found: false };
+  const result = apprenantFromRow(found.row, found.map);
+  result.found = true;
+  result.session_data = getSessionData(result.session);
+  return result;
 }
 
 function getProgressionUser(user) {
@@ -160,23 +210,73 @@ function getNotesUser(user) {
 }
 
 function setEtapeProjet(user, etape) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Apprenants');
-  const data = sheet.getDataRange().getValues();
+  const found = findApprenantRow(user, 'Prénom');
+  if (!found) throw new Error('Apprenant non trouvé');
+  const column = found.map[normalizeHeader('Etape_projet')];
+  if (column === undefined) throw new Error('Colonne Etape_projet introuvable');
+  found.sheet.getRange(found.rowNumber, column + 1).setValue(parseInt(etape, 10) || 0);
+}
+
+function setVisio(user, visio, date, heure, meet) {
+  const number = parseInt(visio, 10);
+  if (number < 1 || number > 3) throw new Error('Numéro de visio invalide');
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(10000);
+  try {
+    const found = findApprenantRow(user, 'Prénom');
+    if (!found) throw new Error('Apprenant non trouvé');
+    const dateColumn = found.map[normalizeHeader('Visio' + number + '_date')];
+    const timeColumn = found.map[normalizeHeader('Visio' + number + '_heure')];
+    const meetColumn = found.map[normalizeHeader('Lien Meet')];
+    if (dateColumn === undefined || timeColumn === undefined) {
+      throw new Error('Colonnes de la visio introuvables');
+    }
+    found.sheet.getRange(found.rowNumber, dateColumn + 1).setValue(String(date || '').trim());
+    found.sheet.getRange(found.rowNumber, timeColumn + 1).setValue(String(heure || '').trim());
+    if (meetColumn !== undefined && meet !== undefined) {
+      found.sheet.getRange(found.rowNumber, meetColumn + 1).setValue(String(meet || '').trim());
+    }
+    SpreadsheetApp.flush();
+    return { success: true, apprenant: getApprenantData(user) };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function getSessionData(sessionId) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Sessions');
+  if (!sheet) return null;
+  const data = sheet.getDataRange().getDisplayValues();
+  if (!data.length) return null;
+  const map = headerMap(data[0]);
   for (let i = 1; i < data.length; i++) {
-    if (data[i][0] === user) {
-      sheet.getRange(i + 1, 10).setValue(etape); // colonne J
-      return;
+    if (String(cell(data[i], map, 'ID')) === String(sessionId)) {
+      return {
+        id: cell(data[i], map, 'ID'),
+        label: cell(data[i], map, 'Label'),
+        ateliers: [1, 2].map(function(n) {
+          return {
+            date: cell(data[i], map, 'Atelier' + n + '_date'),
+            heure: cell(data[i], map, 'Atelier' + n + '_heure'),
+            meet: cell(data[i], map, 'Atelier' + n + '_meet')
+          };
+        })
+      };
     }
   }
+  return null;
 }
 
 function getAllData() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const appSheet = ss.getSheetByName('Apprenants');
-  const apprenants = appSheet.getDataRange().getValues().slice(1).map(r => ({
-    prenom: r[0], session: r[1], meet: r[2],
-    visios: [{date:r[3],heure:r[4]},{date:r[5],heure:r[6]},{date:r[7],heure:r[8]}],
-    etape_projet: r[9] || 0
-  }));
-  return { apprenants: apprenants };
+  const data = appSheet.getDataRange().getDisplayValues();
+  const map = headerMap(data[0] || []);
+  const apprenants = data.slice(1)
+    .filter(function(row) { return cell(row, map, 'Prénom'); })
+    .map(function(row) { return apprenantFromRow(row, map); });
+  const sessionIds = {};
+  apprenants.forEach(function(apprenant) { sessionIds[apprenant.session] = true; });
+  const sessions = Object.keys(sessionIds).map(getSessionData).filter(function(session) { return session; });
+  return { apprenants: apprenants, sessions: sessions };
 }
