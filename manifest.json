@@ -1,0 +1,24 @@
+{
+  "name": "Mon parcours IA",
+  "short_name": "Parcours IA",
+  "description": "Suivi de formation CPF RS7311 — L'IA comme levier de performance",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F7F8FC",
+  "theme_color": "#6B3FA0",
+  "icons": [
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
